@@ -1,0 +1,2 @@
+# Air Quality Analytics: From Data Engineering to ML Deployment
+An end-to-end data analytics and machine learning platform for analyzing, forecasting, and visualizing air quality metrics. This project covers the complete data lifecycle — from data ingestion and analytics engineering to ML modeling, deployment, and interactive visualization — demonstrating production-ready data science and engineering practices.
