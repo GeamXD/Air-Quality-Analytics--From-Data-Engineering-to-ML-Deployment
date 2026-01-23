@@ -149,7 +149,6 @@ FROM date_spine;
 )
 @dp.expect_or_drop("valid_fact_key", "fact_key IS NOT NULL")
 @dp.expect_or_drop("valid_date_key", "date_key IS NOT NULL")
-@dp.expect_or_drop("valid_location_key", "location_key IS NOT NULL")
 def fact_air_quality_daily():
     return spark.sql(
         """
@@ -490,13 +489,13 @@ FROM country_aggregates ca;
 @dp.table(
     name=f"{catalog}.{gold_schema}.ml_features_table",
 )
-# @dp.expect_or_drop("valid_country", "country IS NOT NULL")
 def ml_features_table():
     return spark.sql(
         """
 WITH daily_features AS (
     SELECT
-        f.location_key,
+        f.country,
+        f.city,
         f.date,
         d.year,
         d.month,
@@ -504,7 +503,7 @@ WITH daily_features AS (
         d.quarter,
         d.is_weekend,
 
-        -- Location features
+        -- Location features (static, safe)
         l.population,
         l.n_stations,
         l.population_per_station,
@@ -512,64 +511,92 @@ WITH daily_features AS (
         l.lat,
         l.lon,
 
-        -- Current day pollution
-        f.pm25_median,
-        f.pm10_median,
-        f.no2_median,
+        -- REMOVED: Current day pollution (f.pm25_median, f.pm10_median, f.no2_median)
+        -- These would leak information about the target period
 
-        -- Rolling averages (7-day)
+        -- Historical rolling averages (ONLY BACKWARD-LOOKING)
         AVG(f.pm25_median) OVER (
-            PARTITION BY f.location_key
+            PARTITION BY f.country, f.city
             ORDER BY f.date
-            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+            ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING
         ) AS pm25_7d_avg,
 
-        -- Rolling averages (30-day)
         AVG(f.pm25_median) OVER (
-            PARTITION BY f.location_key
+            PARTITION BY f.country, f.city
             ORDER BY f.date
-            ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+            ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
         ) AS pm25_30d_avg,
 
-        -- Rolling averages (90-day)
         AVG(f.pm25_median) OVER (
-            PARTITION BY f.location_key
+            PARTITION BY f.country, f.city
             ORDER BY f.date
-            ROWS BETWEEN 89 PRECEDING AND CURRENT ROW
+            ROWS BETWEEN 90 PRECEDING AND 1 PRECEDING
         ) AS pm25_90d_avg,
 
-        -- Volatility (7-day standard deviation)
+        AVG(f.pm10_median) OVER (
+            PARTITION BY f.country, f.city
+            ORDER BY f.date
+            ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
+        ) AS pm10_30d_avg,
+
+        AVG(f.no2_median) OVER (
+            PARTITION BY f.country, f.city
+            ORDER BY f.date
+            ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
+        ) AS no2_30d_avg,
+
+        -- Volatility (backward-looking only)
         STDDEV(f.pm25_median) OVER (
-            PARTITION BY f.location_key 
+            PARTITION BY f.country, f.city
             ORDER BY f.date 
-            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+            ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING
         ) AS pm25_7d_volatility,
 
-        -- Trend (difference between current and 7-day average)
-        f.pm25_median - AVG(f.pm25_median) OVER (
-            PARTITION BY f.location_key 
+        -- Trend (comparing recent history to longer-term history)
+        AVG(f.pm25_median) OVER (
+            PARTITION BY f.country, f.city
             ORDER BY f.date 
-            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+            ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING
+        ) - AVG(f.pm25_median) OVER (
+            PARTITION BY f.country, f.city
+            ORDER BY f.date 
+            ROWS BETWEEN 30 PRECEDING AND 8 PRECEDING
         ) AS pm25_trend,
 
-        -- Lag features (previous days)
-        LAG(f.pm25_median, 1) OVER (PARTITION BY f.location_key ORDER BY f.date) AS pm25_lag_1d,
-        LAG(f.pm25_median, 7) OVER (PARTITION BY f.location_key ORDER BY f.date) AS pm25_lag_7d,
+        -- Lag features (historical data points)
+        LAG(f.pm25_median, 1) OVER (PARTITION BY f.country, f.city ORDER BY f.date) AS pm25_lag_1d,
+        LAG(f.pm25_median, 7) OVER (PARTITION BY f.country, f.city ORDER BY f.date) AS pm25_lag_7d,
+        LAG(f.pm25_median, 14) OVER (PARTITION BY f.country, f.city ORDER BY f.date) AS pm25_lag_14d,
+        LAG(f.pm25_median, 30) OVER (PARTITION BY f.country, f.city ORDER BY f.date) AS pm25_lag_30d,
+
+        -- Min/Max in historical window (shows range of recent conditions)
+        MIN(f.pm25_median) OVER (
+            PARTITION BY f.country, f.city
+            ORDER BY f.date 
+            ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
+        ) AS pm25_30d_min,
+        
+        MAX(f.pm25_median) OVER (
+            PARTITION BY f.country, f.city
+            ORDER BY f.date 
+            ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING
+        ) AS pm25_30d_max,
 
         -- Target variable: 30-day forward average PM2.5
         AVG(f.pm25_median) OVER (
-            PARTITION BY f.location_key
+            PARTITION BY f.country, f.city
             ORDER BY f.date
             ROWS BETWEEN CURRENT ROW AND 29 FOLLOWING
         ) AS target_next_30d_pm25_median
 
-    FROM air_quality.`03_gold`.fact_air_quality_daily f  -- FIXED: Added backticks
+    FROM air_quality.`03_gold`.fact_air_quality_daily f
     LEFT JOIN air_quality.`03_gold`.dim_locations l ON f.location_key = l.location_key
-    LEFT JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key  -- FIXED: Changed dim_date to dim_dates
+    LEFT JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key
     WHERE f.pm25_median IS NOT NULL
 )
 SELECT
-    location_key,
+    country,
+    city,
     date,
     year,
     month,
@@ -591,35 +618,44 @@ SELECT
     lat,
     lon,
 
-    -- Historical pollution features
-    pm25_median AS pm25_current,
-    pm10_median AS pm10_current,
-    no2_median AS no2_current,
+    -- Historical pollution features (ALL BACKWARD-LOOKING)
     pm25_7d_avg,
     pm25_30d_avg,
     pm25_90d_avg,
+    pm10_30d_avg,
+    no2_30d_avg,
     pm25_7d_volatility,
     pm25_trend,
     pm25_lag_1d,
     pm25_lag_7d,
+    pm25_lag_14d,
+    pm25_lag_30d,
+    pm25_30d_min,
+    pm25_30d_max,
 
-    -- Derived features
-    CASE WHEN pm25_median > 15 THEN 1 ELSE 0 END AS is_exceeding_who,
-    pm25_median / NULLIF(pm25_30d_avg, 0) AS pm25_ratio_to_30d_avg,
+    -- Derived features (from historical data only)
+    CASE WHEN pm25_7d_avg > 15 THEN 1 ELSE 0 END AS was_exceeding_who_7d,
+    CASE WHEN pm25_30d_avg > 15 THEN 1 ELSE 0 END AS was_exceeding_who_30d,
+    pm25_lag_1d / NULLIF(pm25_30d_avg, 0) AS pm25_recent_ratio,
+    (pm25_30d_max - pm25_30d_min) AS pm25_30d_range,
 
-    -- Target variable
+    -- Target variable (regression)
     target_next_30d_pm25_median,
 
-    -- Binary classification target (will PM2.5 exceed WHO guideline in next 30 days?)
+    -- Binary classification target
     CASE WHEN target_next_30d_pm25_median > 15 THEN 1 ELSE 0 END AS target_will_exceed_who,
 
     CURRENT_TIMESTAMP() AS created_at
 FROM daily_features
 WHERE 
-    -- Ensure we have enough historical data for features
+    -- Ensure sufficient historical data for all features
     pm25_7d_avg IS NOT NULL 
     AND pm25_30d_avg IS NOT NULL
-    -- Only include rows where we have a target (not the last 30 days of data)
+    AND pm25_90d_avg IS NOT NULL
+    AND pm25_lag_1d IS NOT NULL
+    AND pm25_lag_7d IS NOT NULL
+    AND pm25_lag_30d IS NOT NULL
+    -- Only include rows with valid target
     AND target_next_30d_pm25_median IS NOT NULL;
 """
-)
+    )
