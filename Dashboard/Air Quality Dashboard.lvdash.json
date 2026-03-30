@@ -1,0 +1,2320 @@
+{
+  "datasets": [
+    {
+      "name": "0d133447",
+      "displayName": "Q1.1",
+      "queryLines": [
+        "SELECT\n",
+        "    dl.city,\n",
+        "    dl.population,\n",
+        "    dl.n_stations,\n",
+        "    dl.monitoring_density_score,\n",
+        "    ROUND(AVG(faqd.pm25_median), 2) AS avg_pm25,\n",
+        "    ROUND(AVG(faqd.pm25_median) / 15.0 * 1, 1) AS pct_of_who_limit,\n",
+        "    ROUND(SUM(CASE WHEN faqd.pm25_median > 15 THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 1) AS exceedance_pct,\n",
+        "    dl.population AS population_at_risk,\n",
+        "    CASE \n",
+        "        WHEN AVG(faqd.pm25_median) > 35 THEN 'CRITICAL - IMMEDIATE ACTION'\n",
+        "        WHEN AVG(faqd.pm25_median) > 25 THEN 'HIGH - PRIORITY'\n",
+        "        WHEN AVG(faqd.pm25_median) > 15 THEN 'MODERATE - MONITOR'\n",
+        "        ELSE 'LOW - MAINTAIN'\n",
+        "    END AS intervention_priority\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily faqd\n",
+        "JOIN air_quality.`03_gold`.dim_locations dl\n",
+        "ON faqd.country = dl.country\n",
+        "WHERE dl.country = 'NG'\n",
+        "GROUP BY dl.city, dl.population, dl.n_stations, dl.monitoring_density_score\n",
+        "ORDER BY avg_pm25 DESC;"
+      ],
+      "catalog": "air_quality",
+      "schema": "default"
+    },
+    {
+      "name": "396a128c",
+      "displayName": "Q1.2",
+      "queryLines": [
+        "-- Query 1B: Infrastructure investment prioritization matrix\n",
+        "SELECT \n",
+        "    l.city,\n",
+        "    l.population,\n",
+        "    l.n_stations,\n",
+        "    l.population_per_station,\n",
+        "    ROUND(AVG(f.pm25_median), 2) AS avg_pm25,\n",
+        "    -- Calculate optimal station count (target: 500K people per station)\n",
+        "    CEIL(l.population / 500000.0) AS recommended_stations,\n",
+        "    CEIL(l.population / 500000.0) - l.n_stations AS stations_needed,\n",
+        "    -- Investment priority score (pollution severity × infrastructure gap)\n",
+        "    ROUND(AVG(f.pm25_median) * (l.population_per_station / 1000000.0), 2) AS investment_priority_score\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "JOIN air_quality.`03_gold`.dim_locations l ON f.country = l.country\n",
+        "WHERE f.country = 'NG'\n",
+        "GROUP BY l.city, l.population, l.n_stations, l.population_per_station\n",
+        "ORDER BY investment_priority_score DESC;"
+      ],
+      "catalog": "air_quality",
+      "schema": "default"
+    },
+    {
+      "name": "7f329015",
+      "displayName": "Q1.3",
+      "queryLines": [
+        "-- Query 1C: Cumulative population impact\n",
+        "SELECT \n",
+        "    city,\n",
+        "    population_at_risk,\n",
+        "    SUM(population_at_risk) OVER (ORDER BY avg_pm25 DESC) AS cumulative_population,\n",
+        "    ROUND(SUM(population_at_risk) OVER (ORDER BY avg_pm25 DESC) * 1.0 / \n",
+        "          SUM(population_at_risk) OVER (), 1) AS cumulative_pct\n",
+        "FROM (\n",
+        "    SELECT l.city, l.population AS population_at_risk, AVG(f.pm25_median) AS avg_pm25\n",
+        "    FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "    JOIN air_quality.`03_gold`.dim_locations l ON f.country = l.country\n",
+        "    WHERE f.country = 'NG'\n",
+        "    GROUP BY l.city, l.population\n",
+        ");"
+      ],
+      "catalog": "air_quality",
+      "schema": "default"
+    },
+    {
+      "name": "21937770",
+      "displayName": "Q2.0",
+      "queryLines": [
+        "-- Query 2A: Nigeria vs World Comparison\n",
+        "SELECT \n",
+        "    country,\n",
+        "    COUNT(DISTINCT city) AS n_cities,\n",
+        "    SUM(population) AS total_population,\n",
+        "    SUM(n_stations) AS total_stations,\n",
+        "    ROUND(SUM(population) / NULLIF(SUM(n_stations), 0), 0) AS people_per_station,\n",
+        "    ROUND(AVG(avg_pm25), 2) AS simple_avg_pm25,\n",
+        "    ROUND(SUM(avg_pm25 * population) / SUM(population), 2) AS population_weighted_pm25,\n",
+        "    ROUND(AVG(pm25_exceedance_pct), 1) AS avg_exceedance_pct,\n",
+        "    CASE \n",
+        "        WHEN AVG(avg_pm25) > 50 THEN 'Tier 4 - Critical'\n",
+        "        WHEN AVG(avg_pm25) > 30 THEN 'Tier 3 - High Concern'\n",
+        "        WHEN AVG(avg_pm25) > 15 THEN 'Tier 2 - Moderate'\n",
+        "        ELSE 'Tier 1 - Good'\n",
+        "    END AS country_tier\n",
+        "FROM air_quality.`03_gold`.view_nigeria_vs_world\n",
+        "-- WHERE city != 'National Average'\n",
+        "GROUP BY country\n",
+        "ORDER BY population_weighted_pm25 DESC;"
+      ],
+      "catalog": "air_quality",
+      "schema": "default"
+    },
+    {
+      "name": "9a6e3e2e",
+      "displayName": "Q2.1",
+      "queryLines": [
+        "-- Query 2B: Nigeria's position in global rankings\n",
+        "WITH country_rankings AS (\n",
+        "    SELECT \n",
+        "        country,\n",
+        "        ROUND(SUM(avg_pm25 * population) / SUM(population), 2) AS population_weighted_pm25,\n",
+        "        RANK() OVER (ORDER BY SUM(avg_pm25 * population) / SUM(population) DESC) AS pollution_rank\n",
+        "    FROM air_quality.`03_gold`.view_nigeria_vs_world\n",
+        "    -- WHERE city != 'National Average'\n",
+        "    GROUP BY country\n",
+        ")\n",
+        "SELECT \n",
+        "    *,\n",
+        "    (SELECT COUNT(DISTINCT country) FROM air_quality.`03_gold`.view_nigeria_vs_world) AS total_countries,\n",
+        "    CONCAT('Rank ', pollution_rank, ' of ', \n",
+        "           (SELECT COUNT(DISTINCT country) FROM air_quality.`03_gold`.view_nigeria_vs_world)) AS ranking_display\n",
+        "FROM country_rankings\n",
+        "-- WHERE country = 'NG';"
+      ],
+      "columns": [
+        {
+          "displayName": "Nigeria Rank",
+          "description": "",
+          "expression": "CASE \n  WHEN country = 'NG' THEN pollution_rank\nEND"
+        }
+      ],
+      "catalog": "air_quality",
+      "schema": "default"
+    },
+    {
+      "name": "02f48358",
+      "displayName": "Q2.2",
+      "queryLines": [
+        "-- Query 2C: Infrastructure gap analysis\n",
+        "SELECT \n",
+        "    country,\n",
+        "    SUM(n_stations) AS total_stations,\n",
+        "    SUM(population) AS total_population,\n",
+        "    ROUND(SUM(n_stations) * 1000000.0 / SUM(population), 2) AS stations_per_million_people,\n",
+        "    ROUND((SUM(n_stations) * 1000000.0 / SUM(population)) / \n",
+        "          (SELECT SUM(n_stations) * 1000000.0 / SUM(population) \n",
+        "           FROM air_quality.`03_gold`.view_nigeria_vs_world \n",
+        "           WHERE country = 'NG') * 1, 0) AS pct_of_nigeria_density\n",
+        "FROM air_quality.`03_gold`.view_nigeria_vs_world\n",
+        "-- WHERE city != 'National Average'\n",
+        "GROUP BY country\n",
+        "ORDER BY stations_per_million_people DESC;"
+      ],
+      "catalog": "air_quality",
+      "schema": "default"
+    },
+    {
+      "name": "447eb74e",
+      "displayName": "Q3.0",
+      "queryLines": [
+        "-- Query 3A: Year-over-year trend analysis\n",
+        "SELECT \n",
+        "    f.city,\n",
+        "    d.year,\n",
+        "    ROUND(AVG(f.pm25_median), 2) AS avg_pm25,\n",
+        "    ROUND(AVG(f.pm25_median) - LAG(AVG(f.pm25_median)) OVER (PARTITION BY f.city ORDER BY d.year), 2) AS yoy_change,\n",
+        "    ROUND((AVG(f.pm25_median) - LAG(AVG(f.pm25_median)) OVER (PARTITION BY f.city ORDER BY d.year)) / \n",
+        "          NULLIF(LAG(AVG(f.pm25_median)) OVER (PARTITION BY f.city ORDER BY d.year), 0) * 1, 1) AS yoy_change_pct,\n",
+        "    CASE \n",
+        "        WHEN AVG(f.pm25_median) > LAG(AVG(f.pm25_median)) OVER (PARTITION BY f.city ORDER BY d.year) * 1.05 \n",
+        "        THEN '🔴 Worsening'\n",
+        "        WHEN AVG(f.pm25_median) < LAG(AVG(f.pm25_median)) OVER (PARTITION BY f.city ORDER BY d.year) * 0.95 \n",
+        "        THEN '🟢 Improving'\n",
+        "        ELSE '🟡 Stable'\n",
+        "    END AS trend_indicator\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key\n",
+        "WHERE f.country = 'NG'\n",
+        "GROUP BY f.city, d.year\n",
+        "ORDER BY f.city, d.year;"
+      ]
+    },
+    {
+      "name": "21b768ec",
+      "displayName": "Q3.1",
+      "queryLines": [
+        "-- -- Query 3B: Seasonal pattern analysis (Nigeria-specific: Dry vs Rainy)\n",
+        "-- SELECT \n",
+        "--     f.city,\n",
+        "--     CASE \n",
+        "--         WHEN d.month IN (11, 12, 1, 2, 3) THEN 'Dry Season (Harmattan)'\n",
+        "--         ELSE 'Rainy Season'\n",
+        "--     END AS season,\n",
+        "--     ROUND(AVG(f.pm25_median), 2) AS avg_pm25,\n",
+        "--     ROUND(AVG(f.pm10_median), 2) AS avg_pm10,\n",
+        "--     ROUND(MIN(f.pm25_median), 2) AS min_pm25,\n",
+        "--     ROUND(MAX(f.pm25_median), 2) AS max_pm25,\n",
+        "--     COUNT(*) AS n_days\n",
+        "-- FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "-- JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key\n",
+        "-- WHERE f.country = 'NG'\n",
+        "-- GROUP BY f.city, season\n",
+        "-- ORDER BY f.city, season;\n",
+        "\n",
+        "\n",
+        "SELECT \n",
+        "    f.city,\n",
+        "    CASE \n",
+        "        WHEN d.month IN (11, 12, 1, 2, 3) THEN 'Dry Season (Harmattan)'\n",
+        "        ELSE 'Rainy Season'\n",
+        "    END AS season,\n",
+        "    ROUND(AVG(f.pm25_median), 2) AS avg_pm25,\n",
+        "    ROUND(AVG(f.pm10_median), 2) AS avg_pm10,\n",
+        "    ROUND(MIN(f.pm25_median), 2) AS min_pm25,\n",
+        "    ROUND(MAX(f.pm25_median), 2) AS max_pm25,\n",
+        "    COUNT(*) AS n_days\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "JOIN air_quality.`03_gold`.dim_dates d \n",
+        "    ON f.date_key = d.date_key\n",
+        "WHERE f.country = 'NG'\n",
+        "GROUP BY \n",
+        "    f.city,\n",
+        "    CASE \n",
+        "        WHEN d.month IN (11, 12, 1, 2, 3) THEN 'Dry Season (Harmattan)'\n",
+        "        ELSE 'Rainy Season'\n",
+        "    END\n",
+        "ORDER BY f.city, season;"
+      ]
+    },
+    {
+      "name": "cd80bee2",
+      "displayName": "Q3.2",
+      "queryLines": [
+        "\n",
+        "-- Query 3C: Weekly patterns (weekday vs weekend)\n",
+        "SELECT \n",
+        "    f.city,\n",
+        "    CASE WHEN d.is_weekend THEN 'Weekend' ELSE 'Weekday' END AS day_type,\n",
+        "    ROUND(AVG(f.pm25_median), 2) AS avg_pm25,\n",
+        "    ROUND(AVG(f.no2_median), 2) AS avg_no2,\n",
+        "    COUNT(*) AS n_days,\n",
+        "    -- Weekend effect\n",
+        "    ROUND((AVG(f.pm25_median) - AVG(AVG(f.pm25_median)) OVER (PARTITION BY f.city)) / \n",
+        "          AVG(AVG(f.pm25_median)) OVER (PARTITION BY f.city) * 1, 1) AS deviation_from_city_avg_pct\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key\n",
+        "WHERE f.country = 'NG'\n",
+        "GROUP BY f.city, day_type\n",
+        "ORDER BY f.city, day_type;\n"
+      ]
+    },
+    {
+      "name": "4fc33e99",
+      "displayName": "Q3.3",
+      "queryLines": [
+        "-- Query 3D: Multi-year trend with linear regression slope\n",
+        "SELECT \n",
+        "    city,\n",
+        "    MIN(year) AS start_year,\n",
+        "    MAX(year) AS end_year,\n",
+        "    ROUND(MIN(avg_pm25), 2) AS baseline_pm25,\n",
+        "    ROUND(MAX(avg_pm25), 2) AS current_pm25,\n",
+        "    ROUND((MAX(avg_pm25) - MIN(avg_pm25)) / (MAX(year) - MIN(year)), 2) AS annual_change_rate,\n",
+        "    CASE \n",
+        "        WHEN (MAX(avg_pm25) - MIN(avg_pm25)) / (MAX(year) - MIN(year)) > 1 THEN 'ACCELERATING CRISIS'\n",
+        "        WHEN (MAX(avg_pm25) - MIN(avg_pm25)) / (MAX(year) - MIN(year)) > 0 THEN 'Worsening'\n",
+        "        WHEN (MAX(avg_pm25) - MIN(avg_pm25)) / (MAX(year) - MIN(year)) < -1 THEN 'Improving Rapidly'\n",
+        "        ELSE 'Stable/Slight Improvement'\n",
+        "    END AS trend_classification\n",
+        "FROM (\n",
+        "    SELECT f.city, d.year, AVG(f.pm25_median) AS avg_pm25\n",
+        "    FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "    JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key\n",
+        "    WHERE f.country = 'NG'\n",
+        "    GROUP BY f.city, d.year\n",
+        ")\n",
+        "GROUP BY city\n",
+        "ORDER BY annual_change_rate DESC;"
+      ]
+    },
+    {
+      "name": "daeac2c4",
+      "displayName": "Q4.0",
+      "queryLines": [
+        "-- Query 4A: Pollutant exceedance frequency\n",
+        "SELECT \n",
+        "    'PM2.5' AS pollutant,\n",
+        "    15.0 AS who_guideline,\n",
+        "    ROUND(AVG(pm25_median), 2) AS nigeria_avg,\n",
+        "    ROUND(SUM(CASE WHEN pm25_median > 15 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS exceedance_pct,\n",
+        "    COUNT(*) AS total_measurements\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily\n",
+        "WHERE country = 'NG' AND pm25_median IS NOT NULL\n",
+        "\n",
+        "UNION ALL\n",
+        "\n",
+        "SELECT 'PM10', 45.0, ROUND(AVG(pm10_median), 2), \n",
+        "       ROUND(SUM(CASE WHEN pm10_median > 45 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1),\n",
+        "       COUNT(*)\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily\n",
+        "WHERE country = 'NG' AND pm10_median IS NOT NULL\n",
+        "\n",
+        "UNION ALL\n",
+        "\n",
+        "SELECT 'NO2', 25.0, ROUND(AVG(no2_median), 2),\n",
+        "       ROUND(SUM(CASE WHEN no2_median > 25 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1),\n",
+        "       COUNT(*)\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily\n",
+        "WHERE country = 'NG' AND no2_median IS NOT NULL\n",
+        "\n",
+        "ORDER BY exceedance_pct DESC;"
+      ]
+    },
+    {
+      "name": "35aa468d",
+      "displayName": "Q4.0 1",
+      "queryLines": [
+        "-- -- Query 4B: Pollutant correlation matrix\n",
+        "-- SELECT \n",
+        "--     ROUND(CORR(pm25_median, pm10_median), 3) AS pm25_pm10_correlation,\n",
+        "--     ROUND(CORR(pm25_median, no2_median), 3) AS pm25_no2_correlation,\n",
+        "--     ROUND(CORR(pm25_median, o3_median), 3) AS pm25_o3_correlation,\n",
+        "--     ROUND(CORR(no2_median, pm10_median), 3) AS no2_pm10_correlation,\n",
+        "--     ROUND(CORR(no2_median, CAST(d.is_weekend AS INT64)), 3) AS no2_weekend_correlation\n",
+        "-- FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "-- JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key\n",
+        "-- WHERE f.country = 'NG';\n",
+        "\n",
+        "-- Query 4B: Pollutant correlation matrix\n",
+        "SELECT \n",
+        "    ROUND(CORR(pm25_median, pm10_median), 3) AS pm25_pm10_correlation,\n",
+        "    ROUND(CORR(pm25_median, no2_median), 3) AS pm25_no2_correlation,\n",
+        "    ROUND(CORR(pm25_median, o3_median), 3) AS pm25_o3_correlation,\n",
+        "    ROUND(CORR(no2_median, pm10_median), 3) AS no2_pm10_correlation,\n",
+        "    ROUND(CORR(no2_median, CAST(d.is_weekend AS INT)), 3) AS no2_weekend_correlation\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "JOIN air_quality.`03_gold`.dim_dates d \n",
+        "    ON f.date_key = d.date_key\n",
+        "WHERE f.country = 'NG';"
+      ]
+    },
+    {
+      "name": "f5bd510e",
+      "displayName": "Q4.0 2",
+      "queryLines": [
+        "\n",
+        "-- Query 4C: City-specific pollutant profiles\n",
+        "SELECT \n",
+        "    city,\n",
+        "    ROUND(AVG(pm25_median), 1) AS pm25_avg,\n",
+        "    ROUND(AVG(pm10_median), 1) AS pm10_avg,\n",
+        "    ROUND(AVG(no2_median), 1) AS no2_avg,\n",
+        "    ROUND(AVG(so2_median), 1) AS so2_avg,\n",
+        "    ROUND(AVG(pm10_median) / NULLIF(AVG(pm25_median), 0), 2) AS pm10_pm25_ratio,\n",
+        "    CASE \n",
+        "        WHEN AVG(pm10_median) / NULLIF(AVG(pm25_median), 0) > 2.5 THEN 'Dust-dominant (Harmattan/Desert)'\n",
+        "        WHEN AVG(no2_median) > 30 THEN 'Traffic-dominant (Urban)'\n",
+        "        WHEN AVG(so2_median) > 20 THEN 'Industrial-dominant'\n",
+        "        ELSE 'Mixed sources'\n",
+        "    END AS primary_source_category\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily\n",
+        "WHERE country = 'NG'\n",
+        "GROUP BY city\n",
+        "ORDER BY pm25_avg DESC;\n"
+      ]
+    },
+    {
+      "name": "3a2a6253",
+      "displayName": "Q4.0 3",
+      "queryLines": [
+        "-- -- Query 4D: Seasonal source attribution\n",
+        "-- SELECT \n",
+        "--     CASE \n",
+        "--         WHEN d.month IN (11, 12, 1, 2, 3) THEN 'Dry/Harmattan'\n",
+        "--         ELSE 'Rainy'\n",
+        "--     END AS season,\n",
+        "--     ROUND(AVG(f.pm10_median), 1) AS avg_pm10,\n",
+        "--     ROUND(AVG(f.pm25_median), 1) AS avg_pm25,\n",
+        "--     ROUND(AVG(f.pm10_median) / NULLIF(AVG(f.pm25_median), 0), 2) AS pm10_pm25_ratio,\n",
+        "--     -- Ratio >2.5 indicates dust, <2.0 indicates combustion\n",
+        "--     CASE \n",
+        "--         WHEN AVG(f.pm10_median) / NULLIF(AVG(f.pm25_median), 0) > 2.5 THEN 'High dust contribution'\n",
+        "--         ELSE 'Combustion-dominated'\n",
+        "--     END AS source_interpretation\n",
+        "-- FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "-- JOIN air_quality.`03_gold`.dim_dates d ON f.date_key = d.date_key\n",
+        "-- WHERE f.country = 'NG'\n",
+        "-- GROUP BY season;\n",
+        "-- Query 4D: Seasonal source attribution\n",
+        "SELECT \n",
+        "    CASE \n",
+        "        WHEN d.month IN (11, 12, 1, 2, 3) THEN 'Dry/Harmattan'\n",
+        "        ELSE 'Rainy'\n",
+        "    END AS season,\n",
+        "    ROUND(AVG(f.pm10_median), 1) AS avg_pm10,\n",
+        "    ROUND(AVG(f.pm25_median), 1) AS avg_pm25,\n",
+        "    ROUND(AVG(f.pm10_median) / NULLIF(AVG(f.pm25_median), 0), 2) AS pm10_pm25_ratio,\n",
+        "    CASE \n",
+        "        WHEN AVG(f.pm10_median) / NULLIF(AVG(f.pm25_median), 0) > 2.5 \n",
+        "        THEN 'High dust contribution'\n",
+        "        ELSE 'Combustion-dominated'\n",
+        "    END AS source_interpretation\n",
+        "FROM air_quality.`03_gold`.fact_air_quality_daily f\n",
+        "JOIN air_quality.`03_gold`.dim_dates d \n",
+        "    ON f.date_key = d.date_key\n",
+        "WHERE f.country = 'NG'\n",
+        "GROUP BY \n",
+        "    CASE \n",
+        "        WHEN d.month IN (11, 12, 1, 2, 3) THEN 'Dry/Harmattan'\n",
+        "        ELSE 'Rainy'\n",
+        "    END;"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "2c2a2f59",
+      "displayName": "Air Atlas",
+      "layout": [
+        {
+          "widget": {
+            "name": "population-at-risk",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0d133447",
+                  "fields": [
+                    {
+                      "name": "population_at_risk",
+                      "expression": "`population_at_risk`"
+                    },
+                    {
+                      "name": "city",
+                      "expression": "`city`"
+                    },
+                    {
+                      "name": "sum(population_at_risk)",
+                      "expression": "SUM(`population_at_risk`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Population at Risk",
+                "headerAlignment": "center"
+              },
+              "mark": {
+                "colors": [
+                  "#134326",
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "city",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(population_at_risk)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  },
+                  "axis": {
+                    "hideGrid": true,
+                    "hideLabels": false
+                  },
+                  "displayName": "Population",
+                  "scale": {
+                    "type": "quantitative",
+                    "reverse": false
+                  }
+                },
+                "color": {
+                  "fieldName": "population_at_risk",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "type": "quantitative",
+                    "colorRamp": {
+                      "mode": "custom-sequential",
+                      "colors": {
+                        "start": "#A7E3BE",
+                        "end": "#04370D"
+                      }
+                    }
+                  }
+                },
+                "label": {
+                  "show": false,
+                  "showTotal": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "ff050125",
+            "multilineTextboxSpec": {
+              "lines": [
+                "# <span style=\"text-align:center;display:block\"><span style=\"font-size: 48px;line-height: 1.5;\">**NIGERIA AIR ATLAS**</span></span>"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "city-stations-1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0d133447",
+                  "fields": [
+                    {
+                      "name": "sum(n_stations)",
+                      "expression": "SUM(`n_stations`)"
+                    },
+                    {
+                      "name": "city",
+                      "expression": "`city`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "City Stations"
+              },
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "sum(n_stations)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "hideTitle": true
+                  },
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  },
+                  "displayName": "Stations"
+                },
+                "color": {
+                  "fieldName": "city",
+                  "legend": {
+                    "hideTitle": true,
+                    "hide": false
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": 37,
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      {
+                        "value": 3,
+                        "color": "#C07D70"
+                      },
+                      {
+                        "value": 1,
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 6
+                        }
+                      },
+                      {
+                        "value": 2,
+                        "color": "#E25776"
+                      },
+                      {
+                        "value": "Calabar",
+                        "color": "#FF6B6B"
+                      },
+                      {
+                        "value": "Lagos",
+                        "color": "#00D287"
+                      },
+                      {
+                        "value": "Abuja",
+                        "color": "#FFC857"
+                      },
+                      {
+                        "value": "Ilorin",
+                        "color": "#11B5E4"
+                      }
+                    ],
+                    "sort": {
+                      "by": "natural-order"
+                    }
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 7,
+            "y": 5,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "pm25",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0d133447",
+                  "fields": [
+                    {
+                      "name": "avg(avg_pm25)",
+                      "expression": "AVG(`avg_pm25`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "PM25 Nigeria",
+                "showDescription": false,
+                "description": ""
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "avg(avg_pm25)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  },
+                  "style": {
+                    "fontSize": 36,
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "12"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#00E400",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "35.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#FFFF00",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "55.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#FF7E00",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "150.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#FF0000",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "250.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#8F3F97",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "250.5"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#7E0023",
+                        "bold": true
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "cities",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0d133447",
+                  "fields": [
+                    {
+                      "name": "count(*)",
+                      "expression": "COUNT(`*`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "CITIES",
+                "headerAlignment": "left"
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "count(*)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  },
+                  "style": {
+                    "bold": true,
+                    "fontSize": 36
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "available-vs-recommended-stations",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "396a128c",
+                  "fields": [
+                    {
+                      "name": "sum(recommended_stations)",
+                      "expression": "SUM(`recommended_stations`)"
+                    },
+                    {
+                      "name": "sum(n_stations)",
+                      "expression": "SUM(`n_stations`)"
+                    },
+                    {
+                      "name": "city",
+                      "expression": "`city`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Available vs Recommended Stations",
+                "headerAlignment": "center"
+              },
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "selectionColor"
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ],
+                "layout": "group"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fields": [
+                    {
+                      "fieldName": "sum(recommended_stations)",
+                      "displayName": "Recommended Stations"
+                    },
+                    {
+                      "fieldName": "sum(n_stations)",
+                      "displayName": "Available Stations"
+                    }
+                  ],
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "hideGrid": true
+                  }
+                },
+                "y": {
+                  "fieldName": "city",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "color": {
+                  "legend": {
+                    "hideTitle": true,
+                    "hide": false,
+                    "position": "bottom"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "city-intervention-priority",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "396a128c",
+                  "fields": [
+                    {
+                      "name": "city",
+                      "expression": "`city`"
+                    },
+                    {
+                      "name": "sum(investment_priority_score)",
+                      "expression": "SUM(`investment_priority_score`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "City Intervention Priority",
+                "headerAlignment": "center"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "city",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(investment_priority_score)",
+                  "axis": {
+                    "hideGrid": true,
+                    "title": "Score"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "city",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Abuja",
+                        "color": "#FFC857"
+                      },
+                      {
+                        "value": "Ilorin",
+                        "color": "#11B5E4"
+                      },
+                      {
+                        "value": "Calabar",
+                        "color": "#FF6B6B"
+                      },
+                      {
+                        "value": "Lagos",
+                        "color": "#00D287"
+                      }
+                    ]
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 7,
+            "y": 12,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "6aee424c",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## <span style=\"text-align:justify;display:block\"><span style=\"font-size:20px\">**IMPACT ZONES**</span></span>"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "ee98b709",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## <span style=\"font-size:20px\">**GLOBAL BENCHMARKS**</span>"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 19,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "countries-1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "21937770",
+                  "fields": [
+                    {
+                      "name": "count(*)",
+                      "expression": "COUNT(`*`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "COUNTRIES"
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "count(*)",
+                  "style": {
+                    "fontSize": 36,
+                    "bold": true
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 20,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "map-of-pm25",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "21937770",
+                  "fields": [
+                    {
+                      "name": "avg(simple_avg_pm25)",
+                      "expression": "AVG(`simple_avg_pm25`)"
+                    },
+                    {
+                      "name": "country",
+                      "expression": "`country`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "frame": {
+                "showTitle": true,
+                "title": "Country PM25"
+              },
+              "widgetType": "choropleth-map",
+              "encodings": {
+                "color": {
+                  "fieldName": "avg(simple_avg_pm25)",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "type": "quantitative",
+                    "reverse": true,
+                    "colorRamp": {
+                      "mode": "scheme",
+                      "scheme": "redyellowgreen"
+                    },
+                    "domain": {
+                      "min": 12,
+                      "mid": 55.4,
+                      "max": 250
+                    }
+                  }
+                },
+                "extra": [
+                  {
+                    "fieldName": "country"
+                  }
+                ],
+                "region": {
+                  "regionType": "mapbox-v4-admin",
+                  "admin0": {
+                    "fieldName": "country",
+                    "type": "field",
+                    "geographicRole": "admin0-unit-code"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 28,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "75598743",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "21937770",
+                  "fields": [
+                    {
+                      "name": "avg(simple_avg_pm25)",
+                      "expression": "AVG(`simple_avg_pm25`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "PM25"
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "avg(simple_avg_pm25)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  },
+                  "style": {
+                    "fontSize": 36,
+                    "bold": true,
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "12"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#00A972",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "35.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#FFFF00",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "55.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#FF7E00",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "150.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#FF0000",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "250.4"
+                          },
+                          "operator": "<="
+                        },
+                        "color": "#8F3F97",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "250.5"
+                          },
+                          "operator": ">="
+                        },
+                        "color": "#7E0023",
+                        "bold": true
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 20,
+            "width": 6,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "stations-1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "02f48358",
+                  "fields": [
+                    {
+                      "name": "country",
+                      "expression": "`country`"
+                    },
+                    {
+                      "name": "sum(total_stations)",
+                      "expression": "SUM(`total_stations`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Country Stations",
+                "headerAlignment": "center"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "country",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(total_stations)",
+                  "axis": {
+                    "hideGrid": true
+                  },
+                  "displayName": "Total Stations",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "country",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "GB",
+                        "color": "#2829C8"
+                      },
+                      {
+                        "value": "NG",
+                        "color": "#C3ACB0"
+                      }
+                    ]
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 22,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "polution-rank",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "9a6e3e2e",
+                  "fields": [
+                    {
+                      "name": "ranking_display",
+                      "expression": "`ranking_display`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Polution Rank",
+                "showDescription": true,
+                "description": "Higher is Better",
+                "headerAlignment": "right"
+              },
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "ranking_display",
+                  "style": {
+                    "bold": true,
+                    "rules": [
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "Rank 9 "
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#00CC7A",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "8"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#85D651",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "7"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#DADA3B",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "6"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#F2B72E",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "5"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#F28C2E",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "4"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#E65C30",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "3"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#D92E46",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "2"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#A62B6E",
+                        "bold": true
+                      },
+                      {
+                        "condition": {
+                          "operand": {
+                            "type": "data-value",
+                            "value": "1"
+                          },
+                          "operator": "contains"
+                        },
+                        "color": "#7A297A",
+                        "bold": true
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 23,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "country-code",
+            "queries": [
+              {
+                "name": "dashboards/01f11b6cc1181328ab529289a2c28104/datasets/01f11e9acc291344a0936c0a2a8b6d95_country",
+                "query": {
+                  "datasetName": "9a6e3e2e",
+                  "fields": [
+                    {
+                      "name": "country",
+                      "expression": "`country`"
+                    },
+                    {
+                      "name": "country_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "disallowAll": true,
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "NG"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Country Code"
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "country",
+                    "queryName": "dashboards/01f11b6cc1181328ab529289a2c28104/datasets/01f11e9acc291344a0936c0a2a8b6d95_country"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 22,
+            "width": 6,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "b11aaf04",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## <span style=\"font-size: 20px;\">TRENDS & SEASONALITY</span>"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 35,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "pm25-trend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "447eb74e",
+                  "fields": [
+                    {
+                      "name": "year",
+                      "expression": "`year`"
+                    },
+                    {
+                      "name": "avg(avg_pm25)",
+                      "expression": "AVG(`avg_pm25`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "headerAlignment": "center",
+                "title": "PM25 Trend"
+              },
+              "mark": {
+                "colors": [
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "year",
+                  "axis": {
+                    "labelAngle": 0
+                  },
+                  "displayName": "Year",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "avg(avg_pm25)",
+                  "axis": {
+                    "hideGrid": true
+                  },
+                  "displayName": "pm25",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 36,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "pm25-yoy-change",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "447eb74e",
+                  "fields": [
+                    {
+                      "name": "avg(yoy_change)",
+                      "expression": "AVG(`yoy_change`)"
+                    },
+                    {
+                      "name": "year",
+                      "expression": "`year`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "headerAlignment": "center",
+                "title": "PM25 YoY Change"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "year",
+                  "displayName": "Year",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "avg(yoy_change)",
+                  "axis": {
+                    "hideGrid": true
+                  },
+                  "displayName": "PM25 YoY Change",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "avg(yoy_change)",
+                  "legend": {
+                    "hide": true
+                  },
+                  "displayName": "PM25 YoY Change",
+                  "scale": {
+                    "type": "quantitative",
+                    "colorRamp": {
+                      "mode": "scheme",
+                      "scheme": "redyellowgreen"
+                    },
+                    "reverse": false
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 7,
+            "y": 36,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "pm25-seasonal-change-1",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "21b768ec",
+                  "fields": [
+                    {
+                      "name": "season",
+                      "expression": "`season`"
+                    },
+                    {
+                      "name": "avg(avg_pm25)",
+                      "expression": "AVG(`avg_pm25`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "headerAlignment": "center",
+                "title": "PM25 Seasonal Change"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "season",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "avg(avg_pm25)",
+                  "axis": {
+                    "hideGrid": true,
+                    "title": "PM25"
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "season",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Dry Season (Harmattan)",
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 6
+                        }
+                      },
+                      {
+                        "value": "Rainy Season",
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      }
+                    ]
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 43,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "pm25-annual-change",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "4fc33e99",
+                  "fields": [
+                    {
+                      "name": "city",
+                      "expression": "`city`"
+                    },
+                    {
+                      "name": "avg(annual_change_rate)",
+                      "expression": "AVG(`annual_change_rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "headerAlignment": "center",
+                "title": "PM25 Annual Change"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "city",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "avg(annual_change_rate)",
+                  "axis": {
+                    "hideGrid": true
+                  },
+                  "displayName": "Annual Change",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 7,
+            "y": 43,
+            "width": 5,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "b5849624",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## RISK & SOURCES"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 50,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "pollutants",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daeac2c4",
+                  "fields": [
+                    {
+                      "name": "sum(nigeria_avg)",
+                      "expression": "SUM(`nigeria_avg`)"
+                    },
+                    {
+                      "name": "pollutant",
+                      "expression": "`pollutant`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Pollutants",
+                "headerAlignment": "center"
+              },
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "sum(nigeria_avg)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "hideTitle": true
+                  }
+                },
+                "color": {
+                  "fieldName": "pollutant",
+                  "legend": {
+                    "hide": false,
+                    "hideTitle": true
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "PM2.5",
+                        "color": {
+                          "themeColorType": "selectionColor"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 51,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "source-of-pollutant",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "f5bd510e",
+                  "fields": [
+                    {
+                      "name": "primary_source_category",
+                      "expression": "`primary_source_category`"
+                    },
+                    {
+                      "name": "avg(pm25_avg)",
+                      "expression": "AVG(`pm25_avg`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "frame": {
+                "showTitle": true,
+                "title": "Source of Pollutant",
+                "headerAlignment": "center"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "primary_source_category",
+                  "axis": {
+                    "title": "Source Category"
+                  },
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "avg(pm25_avg)",
+                  "axis": {
+                    "hideGrid": true
+                  },
+                  "displayName": "pm25",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "primary_source_category",
+                  "legend": {
+                    "hide": true
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Mixed sources",
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 6
+                        }
+                      },
+                      {
+                        "value": "Dust-dominant (Harmattan/Desert)",
+                        "color": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 51,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "a89e1bdb",
+            "multilineTextboxSpec": {
+              "lines": [
+                "  "
+              ]
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 5,
+            "width": 2,
+            "height": 14
+          }
+        },
+        {
+          "widget": {
+            "name": "cc6c8761",
+            "multilineTextboxSpec": {
+              "lines": [
+                " "
+              ]
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 36,
+            "width": 2,
+            "height": 14
+          }
+        },
+        {
+          "widget": {
+            "name": "313f1e14",
+            "multilineTextboxSpec": {
+              "lines": [
+                " "
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 57,
+            "width": 12,
+            "height": 3
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "c2398fd1",
+      "displayName": "Global Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "a50697ad",
+            "queries": [
+              {
+                "name": "dashboards/01f11b6cc1181328ab529289a2c28104/datasets/01f11e8d4ed31814975af6a45beae290_city",
+                "query": {
+                  "datasetName": "0d133447",
+                  "fields": [
+                    {
+                      "name": "city",
+                      "expression": "`city`"
+                    },
+                    {
+                      "name": "city_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "city",
+                    "queryName": "dashboards/01f11b6cc1181328ab529289a2c28104/datasets/01f11e8d4ed31814975af6a45beae290_city"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "country",
+            "queries": [
+              {
+                "name": "dashboards/01f11b6cc1181328ab529289a2c28104/datasets/01f11e9ab75b1098b8322ce5b141468d_country",
+                "query": {
+                  "datasetName": "21937770",
+                  "fields": [
+                    {
+                      "name": "country",
+                      "expression": "`country`"
+                    },
+                    {
+                      "name": "country_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Country"
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "country",
+                    "queryName": "dashboards/01f11b6cc1181328ab529289a2c28104/datasets/01f11e9ab75b1098b8322ce5b141468d_country"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#F4F2ED",
+        "dark": "#0B0F0C"
+      },
+      "widgetBackgroundColor": {
+        "light": "#EBE9E2",
+        "dark": "#151E18"
+      },
+      "widgetBorderColor": {
+        "light": "#D5CEC3",
+        "dark": "#233329"
+      },
+      "fontColor": {
+        "light": "#3D3C39",
+        "dark": "#E8ECEA"
+      },
+      "selectionColor": {
+        "light": "#5F7E52",
+        "dark": "#008751"
+      },
+      "widgetHeaderAlignment": "LEFT",
+      "fontFamily": "Trebuchet MS"
+    },
+    "applyModeEnabled": false
+  }
+}
