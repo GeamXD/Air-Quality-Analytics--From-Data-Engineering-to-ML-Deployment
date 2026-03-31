@@ -1,3 +1,4 @@
 /TEXTS
 /waqi-covid-data
 .env
+/ML/air-quality-app/.streamlit/secrets.toml
