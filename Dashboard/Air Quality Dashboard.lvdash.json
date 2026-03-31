@@ -1805,7 +1805,7 @@
                       "mode": "scheme",
                       "scheme": "redyellowgreen"
                     },
-                    "reverse": false
+                    "reverse": true
                   }
                 },
                 "label": {

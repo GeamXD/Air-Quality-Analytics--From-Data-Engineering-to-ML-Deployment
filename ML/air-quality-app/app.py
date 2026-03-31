@@ -416,19 +416,19 @@ with tab1:
 # ===========================================================
 with tab2:
     st.markdown("### 📊 Air Quality Analytics Dashboard")
-    st.caption("Live Databricks dashboard — may require workspace authentication.")
+    # st.caption("Live Databricks dashboard — may require workspace authentication.")
 
     components.html(
         f"""
         <iframe
             src="{DASHBOARD_URL}"
             width="100%"
-            height="800"
+            height="960"
             frameborder="0"
             style="border-radius:8px; border:1px solid #e5e7eb;">
         </iframe>
         """,
-        height=820,
+        height=960,
     )
 
 # -------------------------------------------------------
