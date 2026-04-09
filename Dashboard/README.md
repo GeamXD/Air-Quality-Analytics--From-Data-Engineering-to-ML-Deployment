@@ -2,6 +2,8 @@
 
 This directory contains the Databricks SQL analytics dashboard for the Air Quality Analytics platform.
 
+![Air Quality Dashboard](https://github.com/GeamXD/Air-Quality-Analytics--From-Data-Engineering-to-ML-Deployment/blob/main/Dashboard/Air%20Quality%20Dashboard%202026-03-31%2018_51_1.jpeg?raw=true)
+
 ## Contents
 
 | File | Description |
